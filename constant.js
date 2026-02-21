@@ -50,7 +50,7 @@ export const outOfStockKeywords = [
 ];
 
 export const interactableSelectors = [
-  'button:not([aria-label*="Next" i]):not([aria-label*="Previous" i]):not([aria-label*="Page" i]):not([class*="carousel" i]):not([class*="pagination" i])', // Filter out common navigation buttons
+  'button:not([aria-label*="Next" i]):not([aria-label*="Previous" i]):not([aria-label*="Page" i]):not([class*="carousel" i]):not([class*="pagination" i]):not([aria-label*="Go to slide" i])', // Filter out common navigation and slider buttons
   'input[type="radio"]:not([disabled])',
   'input[type="checkbox"]:not([disabled])',
   '[role="button"]:not([disabled])',      // Divs/spans acting as buttons
@@ -62,7 +62,8 @@ export const interactableSelectors = [
   '[data-option]:not([disabled])',        // Elements with data-option
   '[data-variant]:not([disabled])',       // Elements with data-variant
   'a[data-value]:not([disabled])',        // Links with data-value (often image swatches)
-  'a[class*="swatch"]:not([disabled])'    // Links with swatch classes
+  'a[class*="swatch"]:not([disabled])',   // Links with swatch classes
+  'label[for]:not([disabled])'            // Labels for inputs (often size pickers)
 ];
 
 export const redirectKeywords = [

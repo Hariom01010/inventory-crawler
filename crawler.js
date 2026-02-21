@@ -24,6 +24,17 @@ async function isInViewport(element, page) {
 
 const carouselKeywords = ['fotorama__arr', 'fotorama__nav__frame', 'carousel-control', 'slider-arrow', 'slick-arrow', 'swiper-button'];
 
+// Function to compare URLs without query parameters or hashes
+function isSamePage(url1, url2) {
+    try {
+        const u1 = new URL(url1);
+        const u2 = new URL(url2);
+        return u1.origin === u2.origin && u1.pathname === u2.pathname;
+    } catch (e) {
+        return url1 === url2;
+    }
+}
+
 async function checkStockState(page) {
     await page.waitForTimeout(500); 
     
@@ -184,17 +195,29 @@ export const main = async (url) => {
                 if (isCarousel) continue;
 
                 const groupOptions = [];
+                const forbiddenKeywords = ['slide', 'zoom', 'chart', 'next', 'previous', 'page'];
+                
                 for (const member of identicalSiblings) {
+                    const text = (await member.innerText() || await member.getAttribute('title') || await member.getAttribute('aria-label') || 'No Text').trim();
+                    
+                    // Filter out non-individual variants (containers or utility buttons)
+                    if (text.includes('\n') || text.length > 50 || forbiddenKeywords.some(kw => text.toLowerCase().includes(kw))) {
+                        continue;
+                    }
+                    
                     const memberOuterHTML = await member.evaluate(el => el.outerHTML);
                     groupOptions.push({
                         elementHandle: member,
-                        text: (await member.innerText() || await member.getAttribute('title') || await member.getAttribute('aria-label') || 'No Text').trim(),
+                        text: text,
                         initialStatus: (await member.isDisabled()) ? 'outOfStock' : 'inStock',
                         selector: memberOuterHTML
                     });
                     processedElements.add(memberOuterHTML);
                 }
-                detectedVariantGroups.push({ groupName: `Group of ${candidateTag}s`, options: groupOptions });
+                
+                if (groupOptions.length > 1) {
+                    detectedVariantGroups.push({ groupName: `Group of ${candidateTag}s`, options: groupOptions });
+                }
             }
         }
         
@@ -256,8 +279,8 @@ export const main = async (url) => {
                                 await cta.click({ force: true });
                                 await page.waitForTimeout(4000);
                                 
-                                if (page.url() !== url) {
-                                    await log(`    -> Redirected to ${page.url()}. Going back...`);
+                                if (!isSamePage(page.url(), url)) {
+                                    await log(`    -> Actually redirected to ${page.url()}. Going back...`);
                                     await page.goBack();
                                     await page.waitForTimeout(2000);
                                 } else {
