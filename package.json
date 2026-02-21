@@ -1,0 +1,17 @@
+{
+  "name": "crawler",
+  "version": "1.0.0",
+  "description": "",
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {},
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@types/node": "^25.3.0"
+  },
+  "dependencies": {
+    "@playwright/mcp": "^0.0.68"
+  }
+}
