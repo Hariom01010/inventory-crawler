@@ -239,50 +239,6 @@ export const main = async (url) => {
             }
         }
 
-        // --- Dropdown Variant Detection ---
-        await log('Finding dropdown (select) variants...');
-        const selectElements = await page.$('select');
-        for (const select of selectElements) {
-            if (!(await isInViewport(select, page))) continue;
-            
-            const options = await select.$('option');
-            if (options.length <= 1) continue;
-
-            const groupOptions = [];
-            const selectOuterHTML = await select.evaluate(el => el.outerHTML);
-            if (processedElements.has(selectOuterHTML)) continue;
-
-            const label = await page.evaluate(el => {
-                const associatedLabel = document.querySelector(`label[for="${el.id}"]`);
-                if (associatedLabel) return associatedLabel.innerText;
-                return el.name || el.id || 'Dropdown';
-            }, select);
-
-            for (const option of options) {
-                const value = await option.getAttribute('value');
-                const text = (await option.innerText()).trim();
-                const isDisabled = await option.isDisabled();
-
-                if (!value || value === '' || isDisabled) {
-                    await log(`  -> Skipping placeholder/disabled option: "${text}"`);
-                    continue;
-                }
-                
-                groupOptions.push({
-                    elementHandle: select,
-                    valueToSelect: value,
-                    text: text,
-                    initialStatus: 'inStock',
-                    selector: `select > option[value="${value}"]`,
-                    isDropdown: true
-                });
-            }
-            
-            if (groupOptions.length > 0) {
-                detectedVariantGroups.push({ groupName: label, options: groupOptions });
-                processedElements.add(selectOuterHTML);
-            }
-        }
         
         const uniqueGroups = [];
         const seenGroupContents = new Set();

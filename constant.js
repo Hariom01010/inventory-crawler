@@ -50,20 +50,15 @@ export const outOfStockKeywords = [
 ];
 
 export const interactableSelectors = [
-  'button:not([aria-label*="Next" i]):not([aria-label*="Previous" i]):not([aria-label*="Page" i]):not([class*="carousel" i]):not([class*="pagination" i]):not([aria-label*="Go to slide" i])', // Filter out common navigation and slider buttons
   'input[type="radio"]:not([disabled])',
   'input[type="checkbox"]:not([disabled])',
-  '[role="button"]:not([disabled])',      // Divs/spans acting as buttons
-  '[role="radio"]:not([disabled])',       // Divs/spans acting as radios
-  '[role="option"]:not([disabled])',      // For explicit options, e.g., in listboxes
-  '[class*="swatch"]:not([disabled])',     // Common class patterns for swatches
-  '[class*="variant-select"]:not([disabled])', // Common class patterns for variant selectors
-  '[data-value]:not([disabled])',         // Elements with data-value (common for variants)
-  '[data-option]:not([disabled])',        // Elements with data-option
-  '[data-variant]:not([disabled])',       // Elements with data-variant
-  'a[data-value]:not([disabled])',        // Links with data-value (often image swatches)
-  'a[class*="swatch"]:not([disabled])',   // Links with swatch classes
-  'label[for]:not([disabled])'            // Labels for inputs (often size pickers)
+  '[role="radio"]:not([disabled])',
+  '[role="option"]:not([disabled])',
+  '[class*="swatch"]:not([disabled])',
+  '[class*="variant-select"]:not([disabled])',
+  '[data-value]:not([disabled])',
+  '[data-option]:not([disabled])',
+  '[data-variant]:not([disabled])',
 ];
 
 export const redirectKeywords = [
