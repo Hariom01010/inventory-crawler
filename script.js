@@ -1,7 +1,7 @@
 import { main } from "./crawler.js";
 
 const urls = [
-    "https://saralhome.com/collections/fun-kids/products/gull-flower-micro-shape-bathmat-60-60cm-2",
+    "https://www.onitsukatiger.com/in/en-in/product/tiger-corsair/1183c555.300.html",
 ]
 
 for (const url of urls) {

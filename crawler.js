@@ -127,6 +127,25 @@ async function closeCartDrawer(page) {
     return false;
 }
 
+function generateCombinations(groups) {
+    if (!groups || groups.length === 0) {
+        return [];
+    }
+    const allCombinations = [];
+    function recurse(groupIndex, currentCombination) {
+        if (groupIndex === groups.length) {
+            allCombinations.push(currentCombination);
+            return;
+        }
+        const group = groups[groupIndex];
+        for (const option of group.options) {
+            recurse(groupIndex + 1, [...currentCombination, option]);
+        }
+    }
+    recurse(0, []);
+    return allCombinations;
+}
+
 export const main = async (url) => {
     await fs.writeFile(logFile, ''); 
     await log(`--- Processing: ${url} ---`);
@@ -144,9 +163,12 @@ export const main = async (url) => {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
         await page.waitForTimeout(3000);
 
-        await log(`Finding all potential variant candidates in the viewport...`);
+        const processedElements = new Set();
+        const detectedVariantGroups = [];
+
+        // --- Swatch and Button Variant Detection ---
+        await log(`Finding swatch and button variants...`);
         const allCandidates = await page.$$(interactableSelectors.join(', '));
-        
         const viewportCandidates = [];
         for (const candidate of allCandidates) {
             if (await isInViewport(candidate, page)) {
@@ -154,9 +176,6 @@ export const main = async (url) => {
             }
         }
         await log(`Found ${viewportCandidates.length} candidates in the viewport.`);
-
-        const processedElements = new Set();
-        const detectedVariantGroups = [];
 
         for (const candidate of viewportCandidates) {
             const candidateOuterHTML = await candidate.evaluate(el => el.outerHTML);
@@ -170,7 +189,6 @@ export const main = async (url) => {
             const candidateAttrs = await candidate.evaluate(el => Array.from(el.attributes).map(attr => attr.name).sort());
 
             const identicalSiblings = [candidate];
-
             for (const sibling of children) {
                 if (await sibling.evaluate((el, cand) => el === cand, candidate)) continue;
                 const siblingTag = await sibling.evaluate(el => el.tagName);
@@ -195,12 +213,11 @@ export const main = async (url) => {
                 if (isCarousel) continue;
 
                 const groupOptions = [];
-                const forbiddenKeywords = ['slide', 'zoom', 'chart', 'next', 'previous', 'page'];
+                const forbiddenKeywords = ['slide', 'zoom', 'chart', 'next', 'previous', 'page', 'cookie', 'accept', 'reject', 'settings'];
                 
                 for (const member of identicalSiblings) {
-                    const text = (await member.innerText() || await member.getAttribute('title') || await member.getAttribute('aria-label') || 'No Text').trim();
+                    const text = (await member.innerText() || await member.getAttribute('title') || await member.getAttribute('aria-label') || await member.getAttribute('data-value') || 'No Text').trim();
                     
-                    // Filter out non-individual variants (containers or utility buttons)
                     if (text.includes('\n') || text.length > 50 || forbiddenKeywords.some(kw => text.toLowerCase().includes(kw))) {
                         continue;
                     }
@@ -210,7 +227,8 @@ export const main = async (url) => {
                         elementHandle: member,
                         text: text,
                         initialStatus: (await member.isDisabled()) ? 'outOfStock' : 'inStock',
-                        selector: memberOuterHTML
+                        selector: memberOuterHTML,
+                        isDropdown: false
                     });
                     processedElements.add(memberOuterHTML);
                 }
@@ -218,6 +236,51 @@ export const main = async (url) => {
                 if (groupOptions.length > 1) {
                     detectedVariantGroups.push({ groupName: `Group of ${candidateTag}s`, options: groupOptions });
                 }
+            }
+        }
+
+        // --- Dropdown Variant Detection ---
+        await log('Finding dropdown (select) variants...');
+        const selectElements = await page.$('select');
+        for (const select of selectElements) {
+            if (!(await isInViewport(select, page))) continue;
+            
+            const options = await select.$('option');
+            if (options.length <= 1) continue;
+
+            const groupOptions = [];
+            const selectOuterHTML = await select.evaluate(el => el.outerHTML);
+            if (processedElements.has(selectOuterHTML)) continue;
+
+            const label = await page.evaluate(el => {
+                const associatedLabel = document.querySelector(`label[for="${el.id}"]`);
+                if (associatedLabel) return associatedLabel.innerText;
+                return el.name || el.id || 'Dropdown';
+            }, select);
+
+            for (const option of options) {
+                const value = await option.getAttribute('value');
+                const text = (await option.innerText()).trim();
+                const isDisabled = await option.isDisabled();
+
+                if (!value || value === '' || isDisabled) {
+                    await log(`  -> Skipping placeholder/disabled option: "${text}"`);
+                    continue;
+                }
+                
+                groupOptions.push({
+                    elementHandle: select,
+                    valueToSelect: value,
+                    text: text,
+                    initialStatus: 'inStock',
+                    selector: `select > option[value="${value}"]`,
+                    isDropdown: true
+                });
+            }
+            
+            if (groupOptions.length > 0) {
+                detectedVariantGroups.push({ groupName: label, options: groupOptions });
+                processedElements.add(selectOuterHTML);
             }
         }
         
@@ -250,52 +313,64 @@ export const main = async (url) => {
                 totalOutOfStock++;
             }
         } else {
-            for (const group of uniqueGroups) {
-                await log(`\nIterating through options in group: ${group.groupName}`);
-                for (const option of group.options) {
-                    if (option.initialStatus === 'outOfStock') {
-                        totalOutOfStock++;
-                        await log(`  - Option "${option.text}" is disabled.`);
-                        continue;
-                    }
+            const allCombinations = generateCombinations(uniqueGroups);
+            await log(`\n--- Testing ${allCombinations.length} Variant Combinations ---`);
 
-                    await log(`  - Selecting option: "${option.text}"`);
-                    
-                    try {
+            for (const combination of allCombinations) {
+                const combinationText = combination.map(opt => opt.text).join(' / ');
+                await log(`\n- Testing Combination: [${combinationText}]`);
+
+                if (combination.some(opt => opt.initialStatus === 'outOfStock')) {
+                    totalOutOfStock++;
+                    await log(`  -> Combination is initially out of stock (one or more options disabled).`);
+                    continue;
+                }
+
+                try {
+                    for (const option of combination) {
+                        await log(`  - Selecting: "${option.text}"`);
                         await option.elementHandle.scrollIntoViewIfNeeded();
-                        await option.elementHandle.click({ force: true });
-                        await page.waitForTimeout(1500); 
 
-                        const currentStatus = await checkStockState(page);
-                        await log(`    -> Status: ${currentStatus}`);
-
-                        if (currentStatus === 'inStock') {
-                            const cta = await findPrimaryCTA(page);
-                            if (cta) {
-                                const ctaText = (await cta.innerText() || await cta.getAttribute('value') || 'No Text').trim();
-                                await log(`    -> Clicking Primary CTA: "${ctaText}"...`);
-                                await cta.scrollIntoViewIfNeeded();
-                                await page.waitForTimeout(3000);
-                                await cta.click({ force: true });
-                                await page.waitForTimeout(4000);
-                                
-                                if (!isSamePage(page.url(), url)) {
-                                    await log(`    -> Actually redirected to ${page.url()}. Going back...`);
-                                    await page.goBack();
-                                    await page.waitForTimeout(2000);
-                                } else {
-                                    await closeCartDrawer(page);
-                                }
-                            }
-                            totalInStock++;
+                        if (option.isDropdown) {
+                            await option.elementHandle.selectOption(option.valueToSelect);
                         } else {
-                            totalOutOfStock++;
+                            await option.elementHandle.click({ force: true });
                         }
-                    } catch (e) {
-                        await log(`    -> ERROR: ${e.message}`);
-                        totalOutOfStock++;
-                        await closeCartDrawer(page);
+                        
+                        await page.waitForTimeout(500);
                     }
+                    
+                    await page.waitForTimeout(1500); 
+
+                    const currentStatus = await checkStockState(page);
+                    await log(`    -> Status: ${currentStatus}`);
+
+                    if (currentStatus === 'inStock') {
+                        const cta = await findPrimaryCTA(page);
+                        if (cta) {
+                            const ctaText = (await cta.innerText() || await cta.getAttribute('value') || 'No Text').trim();
+                            await log(`    -> Clicking Primary CTA: "${ctaText}"...`);
+                            await cta.scrollIntoViewIfNeeded();
+                            await page.waitForTimeout(1000);
+                            await cta.click({ force: true });
+                            await page.waitForTimeout(4000); 
+                            
+                            if (!isSamePage(page.url(), url)) {
+                                await log(`    -> Redirected to ${page.url()}. Going back...`);
+                                await page.goBack({ waitUntil: 'domcontentloaded' });
+                                await page.waitForTimeout(2000);
+                            } else {
+                                await closeCartDrawer(page);
+                            }
+                        }
+                        totalInStock++;
+                    } else {
+                        totalOutOfStock++;
+                    }
+                } catch (e) {
+                    await log(`    -> ERROR during combination test: ${e.message}`);
+                    totalOutOfStock++;
+                    await closeCartDrawer(page);
                 }
             }
         }
