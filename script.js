@@ -1,7 +1,7 @@
 import { main } from "./crawler.js";
 
 const urls = [
-    "https://www.onitsukatiger.com/in/en-in/product/tiger-corsair/1183c555.300.html",
+    "https://hummel.net.in/products/loose-bay-soccer-jersey-s-s-2",
 ]
 
 for (const url of urls) {

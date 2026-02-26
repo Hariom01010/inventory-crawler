@@ -168,24 +168,55 @@ export const main = async (url) => {
 
         // --- Swatch and Button Variant Detection ---
         await log(`Finding swatch and button variants...`);
+        
         const allCandidates = await page.$$(interactableSelectors.join(', '));
-        const viewportCandidates = [];
+        const visibleCandidates = [];
         for (const candidate of allCandidates) {
-            if (await isInViewport(candidate, page)) {
-                viewportCandidates.push(candidate);
+            if (await candidate.isVisible() && await isInViewport(candidate, page)) {
+                visibleCandidates.push(candidate);
             }
         }
-        await log(`Found ${viewportCandidates.length} candidates in the viewport.`);
+        await log(`Found ${visibleCandidates.length} visible candidates in viewport.`);
 
-        for (const candidate of viewportCandidates) {
+        const forbiddenKeywords = ['slide', 'zoom', 'chart', 'next', 'previous', 'page', 'cookie', 'accept', 'reject', 'settings', 'quantity', 'qty', 'minus', 'plus', 'add', 'remove', 'cart', 'wishlist', 'search'];
+        
+        for (const candidate of visibleCandidates) {
             const candidateOuterHTML = await candidate.evaluate(el => el.outerHTML);
             if (processedElements.has(candidateOuterHTML)) continue;
 
             const parent = await candidate.evaluateHandle(el => el.parentElement);
             if (!parent.asElement()) continue;
 
-            const children = await parent.asElement().$$(':scope > *');
             const candidateTag = await candidate.evaluate(el => el.tagName);
+
+            // Special handling for SELECT
+            if (candidateTag === 'SELECT') {
+                const options = await candidate.$$('option');
+                const groupOptions = [];
+                for (const option of options) {
+                    const val = await option.getAttribute('value');
+                    const text = (await option.innerText()).trim();
+                    if (!val || text.toLowerCase().includes('select')) continue;
+                    
+                    const isOutOfStock = outOfStockKeywords.some(kw => text.toLowerCase().includes(kw.toLowerCase()));
+
+                    groupOptions.push({
+                        elementHandle: candidate,
+                        text: text,
+                        initialStatus: isOutOfStock ? 'outOfStock' : 'inStock',
+                        selector: candidateOuterHTML,
+                        isDropdown: true,
+                        valueToSelect: val
+                    });
+                }
+                if (groupOptions.length > 1) {
+                    detectedVariantGroups.push({ groupName: `Dropdown`, options: groupOptions });
+                }
+                processedElements.add(candidateOuterHTML);
+                continue;
+            }
+
+            const children = await parent.asElement().$$(':scope > *');
             const candidateAttrs = await candidate.evaluate(el => Array.from(el.attributes).map(attr => attr.name).sort());
 
             const identicalSiblings = [candidate];
@@ -196,7 +227,7 @@ export const main = async (url) => {
                 const siblingAttrs = await sibling.evaluate(el => Array.from(el.attributes).map(attr => attr.name).sort());
                 if (JSON.stringify(siblingAttrs) !== JSON.stringify(candidateAttrs)) continue;
                 
-                if (await isInViewport(sibling, page)) {
+                if (await sibling.isVisible()) {
                    identicalSiblings.push(sibling);
                 }
             }
@@ -213,20 +244,21 @@ export const main = async (url) => {
                 if (isCarousel) continue;
 
                 const groupOptions = [];
-                const forbiddenKeywords = ['slide', 'zoom', 'chart', 'next', 'previous', 'page', 'cookie', 'accept', 'reject', 'settings'];
                 
                 for (const member of identicalSiblings) {
-                    const text = (await member.innerText() || await member.getAttribute('title') || await member.getAttribute('aria-label') || await member.getAttribute('data-value') || 'No Text').trim();
+                    const text = (await member.innerText() || await member.getAttribute('title') || await member.getAttribute('aria-label') || await member.getAttribute('data-value') || '').trim();
                     
-                    if (text.includes('\n') || text.length > 50 || forbiddenKeywords.some(kw => text.toLowerCase().includes(kw))) {
+                    if (!text || text.includes('\n') || text.length > 50 || forbiddenKeywords.some(kw => text.toLowerCase().includes(kw))) {
                         continue;
                     }
+                    
+                    const isOutOfStock = (await member.isDisabled()) || outOfStockKeywords.some(kw => text.toLowerCase().includes(kw.toLowerCase()));
                     
                     const memberOuterHTML = await member.evaluate(el => el.outerHTML);
                     groupOptions.push({
                         elementHandle: member,
                         text: text,
-                        initialStatus: (await member.isDisabled()) ? 'outOfStock' : 'inStock',
+                        initialStatus: isOutOfStock ? 'outOfStock' : 'inStock',
                         selector: memberOuterHTML,
                         isDropdown: false
                     });
@@ -285,7 +317,6 @@ export const main = async (url) => {
                 try {
                     for (const option of combination) {
                         await log(`  - Selecting: "${option.text}"`);
-                        await option.elementHandle.scrollIntoViewIfNeeded();
 
                         if (option.isDropdown) {
                             await option.elementHandle.selectOption(option.valueToSelect);
@@ -306,7 +337,6 @@ export const main = async (url) => {
                         if (cta) {
                             const ctaText = (await cta.innerText() || await cta.getAttribute('value') || 'No Text').trim();
                             await log(`    -> Clicking Primary CTA: "${ctaText}"...`);
-                            await cta.scrollIntoViewIfNeeded();
                             await page.waitForTimeout(1000);
                             await cta.click({ force: true });
                             await page.waitForTimeout(4000); 

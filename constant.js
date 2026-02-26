@@ -50,15 +50,24 @@ export const outOfStockKeywords = [
 ];
 
 export const interactableSelectors = [
-  'input[type="radio"]:not([disabled])',
-  'input[type="checkbox"]:not([disabled])',
-  '[role="radio"]:not([disabled])',
-  '[role="option"]:not([disabled])',
-  '[class*="swatch"]:not([disabled])',
-  '[class*="variant-select"]:not([disabled])',
-  '[data-value]:not([disabled])',
-  '[data-option]:not([disabled])',
-  '[data-variant]:not([disabled])',
+  'input[type="radio"]',
+  'input[type="checkbox"]',
+  '[role="radio"]',
+  '[role="option"]',
+  '[role="switch"]',
+  'select',
+  'label',
+  '.swatch',
+  '[class*="swatch"]',
+  '[class*="variant"]',
+  '[class*="option"]',
+  '[class*="size"]',
+  '[class*="color"]',
+  '[data-value]',
+  '[data-option]',
+  '[data-variant]',
+  '[data-property]',
+  'button[type="button"]:not([name="add"]):not([name="checkout"])',
 ];
 
 export const redirectKeywords = [
