@@ -1,6 +1,7 @@
 import {
   inStockKeywords,
   interactableSelectors,
+  INVALID_ATTRIBUTE_KEYWORDS,
   outOfStockKeywords,
 } from "./constant.js";
 import { chromium } from "playwright";
@@ -28,12 +29,6 @@ const generateCombinations = (groups) => {
 
   recurse(0, []);
   return results;
-};
-
-const isElementBetween = (elements, top, bottom) => {
-  return elements.some((el) => {
-    return el.y > top && el.y < bottom;
-  });
 };
 
 const findPrimaryCTA = async (page) => {
@@ -79,55 +74,139 @@ const checkStockState = async (page) => {
   await page.waitForTimeout(500);
 
   const cta = await findPrimaryCTA(page);
-
   if (cta) {
     const text = ((await cta.innerText()) || "").toLowerCase();
-
     if (outOfStockKeywords.some((k) => text.includes(k))) {
       return "outOfStock";
     }
-
     if (inStockKeywords.some((k) => text.includes(k))) {
       return "inStock";
     }
   }
 
   const pageText = (await page.content()).toLowerCase();
-
   if (outOfStockKeywords.some((k) => pageText.includes(k))) {
     return "outOfStock";
   }
-
   return "inStock";
 };
 
 function removeOutliers(cluster) {
-  if (cluster.length < 3) return cluster;
+  if (cluster.length < 2) return cluster;
+  if (cluster.length === 2) {
+    const d = Math.sqrt(
+      Math.pow(cluster[0].x - cluster[1].x, 2) +
+        Math.pow(cluster[0].y - cluster[1].y, 2),
+    );
+    if (d > 500) {
+      return;
+    }
+    return cluster;
+  }
 
-  const xs = cluster.map((el) => el.x).sort((a, b) => a - b);
+  let currentCluster = [...cluster];
 
-  const medianX = xs[Math.floor(xs.length / 2)];
+  while (currentCluster.length >= 3) {
+    const n = currentCluster.length;
 
-  return cluster.filter((el) => Math.abs(el.x - medianX) < 200);
+    const sortedX = [...currentCluster].map((el) => el.x).sort((a, b) => a - b);
+    const medianX = sortedX[Math.floor(n / 2)];
+    const sortedY = [...currentCluster].map((el) => el.y).sort((a, b) => a - b);
+    const medianY = sortedY[Math.floor(n / 2)];
+
+    // Map distances from center
+    const clusterWithDist = currentCluster.map((el) => ({
+      ...el,
+      dist: Math.sqrt(
+        Math.pow(el.x - medianX, 2) + Math.pow(el.y - medianY, 2),
+      ),
+    }));
+
+    // Sort by distance (ascending)
+    clusterWithDist.sort((a, b) => a.dist - b.dist);
+
+    const minIdx = 0;
+    const maxIdx = n - 1;
+    const suspect = clusterWithDist[maxIdx];
+    const range = suspect.dist - clusterWithDist[minIdx].dist;
+
+    if (range === 0) break;
+
+    // Dixon's Q Critical Values (95% confidence)
+    const qTable = {
+      3: 0.941,
+      4: 0.765,
+      5: 0.642,
+      6: 0.56,
+      7: 0.507,
+      8: 0.468,
+      9: 0.437,
+      10: 0.412,
+    };
+    const Q_CRIT = qTable[n] || 0.4;
+
+    const gap = suspect.dist - clusterWithDist[n - 2].dist;
+    const qExp = gap / range;
+
+    if (qExp > Q_CRIT) {
+      // SUCCESSFUL REMOVAL: Filter the suspect out using a unique property (like x and y)
+      currentCluster = currentCluster.filter(
+        (el) => !(el.x === suspect.x && el.y === suspect.y),
+      );
+      // Loop continues to check the NEW smaller cluster
+    } else {
+      // No more outliers found
+      break;
+    }
+  }
+
+  return currentCluster;
 }
 
-export const main = async (url) => {
-  const browser = await chromium.launch({
-    headless: false,
-  });
-  const context = await browser.newContext({
-    viewport: { width: 1920, height: 1080 },
-    userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  });
-  const page = await context.newPage();
+function hasHorizontalNeighbor(cluster) {
+  const yThreshold = 25;
+  const xThreshold = 20;
 
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 5000 });
-  await page.waitForTimeout(3000);
+  for (let i = 0; i < cluster.length; i++) {
+    for (let j = i + 1; j < cluster.length; j++) {
+      const a = cluster[i];
+      const b = cluster[j];
 
+      const sameRow = Math.abs(a.y - b.y) < yThreshold;
+      const differentColumn = Math.abs(a.x - b.x) > xThreshold;
+
+      if (sameRow && differentColumn) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function getMajorityTag(cluster) {
+  const counts = {};
+
+  for (const el of cluster) {
+    counts[el.tag] = (counts[el.tag] || 0) + 1;
+  }
+
+  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+}
+
+function hasInvalidAttribute(el) {
+  const values = [el.classes, el.id, el.name, el.aria, el.role, el.text];
+
+  const combined = values.join(" ").toLowerCase();
+
+  return INVALID_ATTRIBUTE_KEYWORDS.some((word) => combined.includes(word));
+}
+
+async function collectViewportElements(page) {
   const selectorQuery = interactableSelectors.join(",");
   const locator = page.locator(selectorQuery);
-  const inViewPortElements = [];
+
+  const elements = [];
 
   for (let i = 0; i < (await locator.count()); i++) {
     const element = locator.nth(i);
@@ -147,8 +226,10 @@ export const main = async (url) => {
       ) {
         return false;
       }
+
       const excludedTags = ["HEADER", "FOOTER", "NAV"];
       let parent = node;
+
       while (parent) {
         if (excludedTags.includes(parent.tagName)) return false;
         parent = parent.parentElement;
@@ -158,22 +239,29 @@ export const main = async (url) => {
     });
 
     if (!inViewPort) continue;
+
     const text = await element.evaluate((node) =>
       (node.innerText || "").toLowerCase(),
     );
 
     const isCTA =
-      inStockKeywords.some((keyword) => text.includes(keyword)) ||
-      outOfStockKeywords.some((keyword) => text.includes(keyword));
+      inStockKeywords.some((k) => text.includes(k)) ||
+      outOfStockKeywords.some((k) => text.includes(k));
+
     if (isCTA) continue;
 
-    inViewPortElements.push(element);
+    elements.push(element);
   }
 
-  const elementsInfo = [];
-  for (const element of inViewPortElements) {
+  return elements;
+}
+async function extractElementInfo(elements) {
+  const result = [];
+
+  for (const element of elements) {
     const info = await element.evaluate((node) => {
       const rect = node.getBoundingClientRect();
+
       return {
         text:
           node.innerText?.trim() ||
@@ -186,18 +274,25 @@ export const main = async (url) => {
         height: rect.height,
         tag: node.tagName,
         classes: node.className,
+        id: node.id || "",
+        name: node.getAttribute("name") || "",
+        aria: node.getAttribute("aria-label") || "",
+        role: node.getAttribute("role") || "",
       };
     });
 
-    elementsInfo.push({
+    result.push({
       locator: element,
       ...info,
     });
   }
 
-  elementsInfo.sort((a, b) => a.y - b.y);
+  result.sort((a, b) => a.y - b.y);
+
+  return result;
+}
+async function normalizeInputLabels(elementsInfo) {
   const swatchElements = [];
-  const clusters = [];
   const usedInputs = new Set();
 
   for (const el of elementsInfo) {
@@ -232,74 +327,69 @@ export const main = async (url) => {
     if (el.tag === "LABEL") {
       const forAttr = await el.locator.getAttribute("for");
 
-      if (forAttr && usedInputs.has(forAttr)) {
-        continue;
-      }
+      if (forAttr && usedInputs.has(forAttr)) continue;
     }
 
     swatchElements.push(el);
   }
-  let currentCluster = [swatchElements[0]];
 
-  for (let i = 1; i < swatchElements.length; i++) {
-    const current = swatchElements[i];
-    const lastInCluster = currentCluster[currentCluster.length - 1];
+  return swatchElements;
+}
+function clusterElements(elements) {
+  const clusters = [];
 
-    const distance = Math.abs(current.y - lastInCluster.y);
-    const elementBetween = isElementBetween(
-      elementsInfo,
-      lastInCluster.y + lastInCluster.height,
-      current.y,
-    );
+  let currentCluster = [elements[0]];
 
-    const isVariantLabel =
-      current.tag === "LABEL" &&
-      current.text &&
-      (current.text.toLowerCase().startsWith("color") ||
-        current.text.toLowerCase().startsWith("size") ||
-        current.text.toLowerCase().startsWith("material"));
+  for (let i = 1; i < elements.length; i++) {
+    const current = elements[i];
 
-    if (!isVariantLabel && distance < 100 && !elementBetween) {
+    const nearestColumnElement = currentCluster.reduce((closest, el) => {
+      const dist = Math.abs(el.x - current.x);
+
+      if (!closest || dist < closest.dist) {
+        return { el, dist };
+      }
+
+      return closest;
+    }, null)?.el;
+
+    let shouldJoinCluster = false;
+
+    if (nearestColumnElement) {
+      const MAX_VERTICAL_GAP = 70;
+
+      const yDist = Math.abs(current.y - nearestColumnElement.y);
+      const xDist = Math.abs(current.x - nearestColumnElement.x);
+
+      const distance = Math.sqrt(xDist ** 2 + yDist ** 2);
+
+      shouldJoinCluster = distance < 150 && yDist < MAX_VERTICAL_GAP;
+    }
+
+    if (shouldJoinCluster) {
       currentCluster.push(current);
     } else {
       clusters.push(currentCluster);
       currentCluster = [current];
     }
   }
+
   clusters.push(currentCluster);
 
+  return clusters;
+}
+function extractVariantGroups(clusters) {
   const variantGroups = [];
+
   for (const rawCluster of clusters) {
     const cluster = removeOutliers(rawCluster);
-    let clusterType = null;
 
-    for (const el of cluster) {
-      if (!el.text) continue;
+    const majorityTag = getMajorityTag(cluster);
 
-      const text = el.text.toLowerCase().trim();
-
-      if (el.tag === "LABEL") {
-        if (text.startsWith("color")) {
-          clusterType = "color";
-          break;
-        }
-
-        if (text.startsWith("size")) {
-          clusterType = "size";
-          break;
-        }
-
-        if (text.startsWith("material")) {
-          clusterType = "material";
-          break;
-        }
-      }
-    }
     const variantOptions = cluster.filter((el) => {
-      // remove variant labels
-      if (el.tag === "LABEL") return false;
+      if (hasInvalidAttribute(el)) return false;
+      if (el.tag !== majorityTag) return false;
 
-      // remove container elements that contain other cluster elements
       const isContainer = cluster.some((other) => {
         if (other === el) return false;
 
@@ -312,31 +402,48 @@ export const main = async (url) => {
         return inside;
       });
 
-      if (isContainer) return false;
-
-      return true;
+      return !isContainer;
     });
-    const options = [];
 
-    for (const el of variantOptions) {
-      options.push({
-        elementHandle: el.locator,
-        text: el.text,
-        initialStatus: "unknown",
-        isDropdown: false,
-      });
-    }
-
-    if (options.length > 1) {
+    if (variantOptions.length > 1 && hasHorizontalNeighbor(variantOptions)) {
       variantGroups.push({
-        groupName: clusterType || "unknown",
-        options,
+        groupName: "unknown",
+        options: variantOptions.map((el) => ({
+          elementHandle: el.locator,
+          text: el.text,
+          initialStatus: "unknown",
+          isDropdown: false,
+        })),
       });
     }
-    console.log("Cluster classified as:", clusterType);
   }
 
+  return variantGroups;
+}
+
+export const main = async (url) => {
+  const browser = await chromium.launch({ headless: false });
+  const context = await browser.newContext({
+    viewport: { width: 1920, height: 1080 },
+  });
+  const page = await context.newPage();
+
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(3000);
+
+  const elements = await collectViewportElements(page);
+
+  const elementsInfo = await extractElementInfo(elements);
+
+  const swatchElements = await normalizeInputLabels(elementsInfo);
+
+  const clusters = clusterElements(swatchElements);
+
+  const variantGroups = extractVariantGroups(clusters);
+
   const combinations = generateCombinations(variantGroups);
+
+  console.log("\n===== INITIAL CLUSTERS =====");
   for (let i = 0; i < clusters.length; i++) {
     const cluster = clusters[i];
 
@@ -348,10 +455,25 @@ export const main = async (url) => {
         text: el.text,
         tag: el.tag,
         y: el.y,
+        x: el.x,
         classes: el.classes,
       });
     }
   }
+
+  console.log("\n===== FINAL VARIANT GROUPS =====");
+
+  variantGroups.forEach((group, i) => {
+    console.log(`\nVariant Group ${i + 1}`);
+
+    group.options.forEach((opt) => {
+      console.log({
+        text: opt.text,
+        tag: opt.elementHandle ? "locator" : "unknown",
+      });
+    });
+  });
+
   for (const combo of combinations) {
     console.log("Testing combination:", combo.map((o) => o.text).join(" / "));
 
