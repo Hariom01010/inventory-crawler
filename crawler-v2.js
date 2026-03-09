@@ -8,33 +8,123 @@ import { chromium } from "playwright";
 let inStockVariants = 0;
 let outOfStockVariants = 0;
 
-const elementInViewPort = async (page, element, inViewPortElements) => {
-  const viewport = page.viewportSize();
-  const box = await element.boundingBox();
+const generateCombinations = (groups) => {
+  if (!groups || groups.length === 0) return [];
 
-  if (box && viewport) {
-    return (
-      box &&
-      box.y + box.height > 0 &&
-      box.y < viewport.height &&
-      box.x + box.width > 0 &&
-      box.width < viewport.width
-    );
+  const results = [];
+
+  function recurse(index, current) {
+    if (index === groups.length) {
+      results.push(current);
+      return;
+    }
+
+    const group = groups[index];
+
+    for (const option of group.options) {
+      recurse(index + 1, [...current, option]);
+    }
   }
-  return false;
+
+  recurse(0, []);
+  return results;
 };
+
+const isElementBetween = (elements, top, bottom) => {
+  return elements.some((el) => {
+    return el.y > top && el.y < bottom;
+  });
+};
+
+const findPrimaryCTA = async (page) => {
+  const ctaSelectors = [
+    'button[name="add"]',
+    "#add-to-cart",
+    ".add-to-cart",
+    ".btn-add-to-cart",
+    "button.primary-cta",
+    ".pdp-addtobag-btn",
+  ];
+
+  for (const selector of ctaSelectors) {
+    const btn = page.locator(selector);
+    if ((await btn.count()) && (await btn.first().isVisible())) {
+      return btn.first();
+    }
+  }
+
+  const buttons = page.locator(
+    'button, input[type="button"], input[type="submit"], [role="button"]',
+  );
+
+  for (let i = 0; i < (await buttons.count()); i++) {
+    const btn = buttons.nth(i);
+
+    if (await btn.isVisible()) {
+      const text = ((await btn.innerText()) || "").toLowerCase();
+
+      if (
+        inStockKeywords.some((k) => text.includes(k)) ||
+        outOfStockKeywords.some((k) => text.includes(k))
+      ) {
+        return btn;
+      }
+    }
+  }
+
+  return null;
+};
+
+const checkStockState = async (page) => {
+  await page.waitForTimeout(500);
+
+  const cta = await findPrimaryCTA(page);
+
+  if (cta) {
+    const text = ((await cta.innerText()) || "").toLowerCase();
+
+    if (outOfStockKeywords.some((k) => text.includes(k))) {
+      return "outOfStock";
+    }
+
+    if (inStockKeywords.some((k) => text.includes(k))) {
+      return "inStock";
+    }
+  }
+
+  const pageText = (await page.content()).toLowerCase();
+
+  if (outOfStockKeywords.some((k) => pageText.includes(k))) {
+    return "outOfStock";
+  }
+
+  return "inStock";
+};
+
+function removeOutliers(cluster) {
+  if (cluster.length < 3) return cluster;
+
+  const xs = cluster.map((el) => el.x).sort((a, b) => a - b);
+
+  const medianX = xs[Math.floor(xs.length / 2)];
+
+  return cluster.filter((el) => Math.abs(el.x - medianX) < 200);
+}
 
 export const main = async (url) => {
   const browser = await chromium.launch({
     headless: false,
   });
-  const context = await browser.newContext();
+  const context = await browser.newContext({
+    viewport: { width: 1920, height: 1080 },
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  });
   const page = await context.newPage();
 
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 5000 });
   await page.waitForTimeout(3000);
 
-  // FIND ELEMENTS IN VIEWPORT
   const selectorQuery = interactableSelectors.join(",");
   const locator = page.locator(selectorQuery);
   const inViewPortElements = [];
@@ -85,7 +175,11 @@ export const main = async (url) => {
     const info = await element.evaluate((node) => {
       const rect = node.getBoundingClientRect();
       return {
-        text: node.innerText?.trim(),
+        text:
+          node.innerText?.trim() ||
+          node.getAttribute("aria-label") ||
+          node.getAttribute("title") ||
+          "",
         x: rect.x,
         y: rect.y,
         width: rect.width,
@@ -102,24 +196,70 @@ export const main = async (url) => {
   }
 
   elementsInfo.sort((a, b) => a.y - b.y);
-  const dropdownElements = [];
   const swatchElements = [];
   const clusters = [];
+  const usedInputs = new Set();
 
   for (const el of elementsInfo) {
-    if (el.tag === "SELECT") {
-      dropdownElements.push(el);
-    } else {
-      swatchElements.push(el);
+    if (el.tag === "INPUT") {
+      const id = await el.locator.getAttribute("id");
+      if (!id) continue;
+
+      let matchedLabel = null;
+
+      for (const candidate of elementsInfo) {
+        if (candidate.tag !== "LABEL") continue;
+
+        const forAttr = await candidate.locator.getAttribute("for");
+
+        if (forAttr === id) {
+          matchedLabel = candidate;
+          break;
+        }
+      }
+
+      if (matchedLabel) {
+        swatchElements.push({
+          ...matchedLabel,
+          locator: matchedLabel.locator,
+        });
+
+        usedInputs.add(id);
+        continue;
+      }
     }
+
+    if (el.tag === "LABEL") {
+      const forAttr = await el.locator.getAttribute("for");
+
+      if (forAttr && usedInputs.has(forAttr)) {
+        continue;
+      }
+    }
+
+    swatchElements.push(el);
   }
   let currentCluster = [swatchElements[0]];
 
   for (let i = 1; i < swatchElements.length; i++) {
-    const prev = swatchElements[i - 1];
     const current = swatchElements[i];
+    const lastInCluster = currentCluster[currentCluster.length - 1];
 
-    if (Math.abs(current.y - prev.y) < 80) {
+    const distance = Math.abs(current.y - lastInCluster.y);
+    const elementBetween = isElementBetween(
+      elementsInfo,
+      lastInCluster.y + lastInCluster.height,
+      current.y,
+    );
+
+    const isVariantLabel =
+      current.tag === "LABEL" &&
+      current.text &&
+      (current.text.toLowerCase().startsWith("color") ||
+        current.text.toLowerCase().startsWith("size") ||
+        current.text.toLowerCase().startsWith("material"));
+
+    if (!isVariantLabel && distance < 100 && !elementBetween) {
       currentCluster.push(current);
     } else {
       clusters.push(currentCluster);
@@ -128,7 +268,9 @@ export const main = async (url) => {
   }
   clusters.push(currentCluster);
 
-  for (const cluster of clusters) {
+  const variantGroups = [];
+  for (const rawCluster of clusters) {
+    const cluster = removeOutliers(rawCluster);
     let clusterType = null;
 
     for (const el of cluster) {
@@ -153,27 +295,48 @@ export const main = async (url) => {
         }
       }
     }
-    const variantOptions = cluster.filter((el) => el.tag !== "LABEL");
+    const variantOptions = cluster.filter((el) => {
+      // remove variant labels
+      if (el.tag === "LABEL") return false;
+
+      // remove container elements that contain other cluster elements
+      const isContainer = cluster.some((other) => {
+        if (other === el) return false;
+
+        const inside =
+          other.x >= el.x &&
+          other.y >= el.y &&
+          other.x + other.width <= el.x + el.width &&
+          other.y + other.height <= el.y + el.height;
+
+        return inside;
+      });
+
+      if (isContainer) return false;
+
+      return true;
+    });
+    const options = [];
+
+    for (const el of variantOptions) {
+      options.push({
+        elementHandle: el.locator,
+        text: el.text,
+        initialStatus: "unknown",
+        isDropdown: false,
+      });
+    }
+
+    if (options.length > 1) {
+      variantGroups.push({
+        groupName: clusterType || "unknown",
+        options,
+      });
+    }
     console.log("Cluster classified as:", clusterType);
   }
 
-  for (const element of dropdownElements) {
-    const options = element.locator.locator("option");
-    const optionCount = await options.count();
-    console.log("Dropdown detected:", element.text);
-
-    for (let i = 0; i < optionCount; i++) {
-      const option = options.nth(i);
-
-      const value = await option.getAttribute("value");
-      const label = await option.innerText();
-
-      if (!value || label.toLowerCase().includes("select")) continue;
-
-      console.log("Option:", label);
-    }
-  }
-
+  const combinations = generateCombinations(variantGroups);
   for (let i = 0; i < clusters.length; i++) {
     const cluster = clusters[i];
 
@@ -189,5 +352,43 @@ export const main = async (url) => {
       });
     }
   }
+  for (const combo of combinations) {
+    console.log("Testing combination:", combo.map((o) => o.text).join(" / "));
 
+    try {
+      for (const option of combo) {
+        await option.elementHandle.click({ force: true });
+        await page.waitForTimeout(500);
+      }
+
+      await page.waitForTimeout(1500);
+
+      const status = await checkStockState(page);
+      console.log("Stock status:", status);
+
+      if (status === "inStock") {
+        const cta = await findPrimaryCTA(page);
+
+        if (cta) {
+          await cta.click({ force: true });
+          await page.waitForTimeout(2000);
+        }
+
+        inStockVariants++;
+      } else {
+        outOfStockVariants++;
+      }
+    } catch (err) {
+      console.log("Combination failed:", err.message);
+      outOfStockVariants++;
+    }
+  }
+
+  console.log("\nFinal result:");
+  console.log({
+    url,
+    inStockVariants,
+    outOfStockVariants,
+  });
+  await browser.close();
 };

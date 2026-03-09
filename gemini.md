@@ -5,3 +5,6 @@
 - Don't make any changes in the script.js file
 - stay within the scope of the request. No need to jump steps. Eg: If asked to remove code just remove code, dont run the script
 - Use Playwright Locator
+- Dont touch crawler.js
+- Only edit crawler-v2.js
+- First plan when plan is finalized then make code changes. Confirm from user what they want before any changes

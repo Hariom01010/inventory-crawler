@@ -2,7 +2,7 @@ import { main } from "./crawler-v2.js";
 
 
 const urls = [
-    "https://www.onitsukatiger.com/in/en-in/product/california-78-ex/1183a355.407.html",
+    "https://www.amydus.com/products/black-tummy-shaper-bell-bottom",
 ]
 
 for (const url of urls) {
